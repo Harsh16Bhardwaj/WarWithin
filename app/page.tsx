@@ -112,12 +112,16 @@ const CUBE_CYCLE_DAYS = 10;
 const TIME_ZONE = "Asia/Calcutta";
 const TODAY = () => localDateKey();
 
-type AmbientTrackId = "rain-keep" | "temple-depths" | "night-wind";
+type AmbientTrackId = "rain-keep" | "temple-depths" | "night-wind" | "ember-hall" | "deep-ocean" | "brown-noise";
+type AmbientStatus = "idle" | "playing" | "paused";
 
 const AMBIENT_TRACKS: Array<{ id: AmbientTrackId; name: string; subtitle: string }> = [
   { id: "rain-keep", name: "Rain Keep", subtitle: "soft rain, low stone drone" },
   { id: "temple-depths", name: "Temple Depths", subtitle: "warm hum, slow bells" },
   { id: "night-wind", name: "Night Wind", subtitle: "air, distant pressure, calm dark" },
+  { id: "ember-hall", name: "Ember Hall", subtitle: "low fire, warm room tone" },
+  { id: "deep-ocean", name: "Deep Ocean", subtitle: "distant tide, submerged calm" },
+  { id: "brown-noise", name: "Brown Noise", subtitle: "steady low focus wash" },
 ];
 
 const URGE_XP: Record<UrgeOutcome, Record<UrgeStrength, number>> = {
@@ -589,20 +593,52 @@ function startAmbientTrack(trackId: AmbientTrackId, volume: number): AmbientRunt
     createDrone(65.41, 0.03);
   }
 
+  if (trackId === "ember-hall") {
+    createNoise("lowpass", 420, 0.18, 8);
+    createNoise("bandpass", 95, 0.09, 5);
+    createDrone(61.74, 0.045);
+    createDrone(92.5, 0.028, "triangle");
+  }
+
+  if (trackId === "deep-ocean") {
+    createNoise("lowpass", 310, 0.24, 14);
+    createNoise("bandpass", 120, 0.14, 11);
+    createDrone(36.71, 0.05);
+    createDrone(55, 0.024);
+  }
+
+  if (trackId === "brown-noise") {
+    createNoise("lowpass", 240, 0.38, 12);
+    createDrone(50, 0.018);
+  }
+
   return runtime;
 }
 
-function stopAmbientRuntime(runtime: AmbientRuntime | null) {
+function stopAmbientRuntime(runtime: AmbientRuntime | null, fadeMs = 0) {
   if (!runtime) return;
-  runtime.sources.forEach((source) => {
-    try {
-      source.stop();
-    } catch {
-      // Source may already be stopped when switching tracks quickly.
-    }
-  });
-  runtime.nodes.forEach((node) => node.disconnect());
-  void runtime.context.close().catch(() => undefined);
+  const close = () => {
+    runtime.sources.forEach((source) => {
+      try {
+        source.stop();
+      } catch {
+        // Source may already be stopped when switching tracks quickly.
+      }
+    });
+    runtime.nodes.forEach((node) => node.disconnect());
+    void runtime.context.close().catch(() => undefined);
+  };
+
+  if (fadeMs > 0 && runtime.context.state !== "closed") {
+    const now = runtime.context.currentTime;
+    runtime.master.gain.cancelScheduledValues(now);
+    runtime.master.gain.setValueAtTime(runtime.master.gain.value, now);
+    runtime.master.gain.linearRampToValueAtTime(0.0001, now + fadeMs / 1000);
+    window.setTimeout(close, fadeMs + 40);
+    return;
+  }
+
+  close();
 }
 
 function readAmbientPreferences() {
@@ -639,7 +675,7 @@ export default function Home() {
   const [timerTarget, setTimerTarget] = useState<{ kind: "checkpost" | "boss"; id: string; name: string; minutes: number } | null>(null);
   const [leaveOpen, setLeaveOpen] = useState(false);
   const [pulse, setPulse] = useState<"gain" | "loss" | "level" | null>(null);
-  const [rewardMuted, setRewardMuted] = useState(() => readRewardSoundMuted());
+  const [rewardMuted, setRewardMuted] = useState(false);
   const [rewardPlaying, setRewardPlaying] = useState(false);
 
   const date = TODAY();
@@ -660,6 +696,7 @@ export default function Home() {
           setState(defaultState());
         }
       }
+      setRewardMuted(readRewardSoundMuted());
       setHydrated(true);
     }, 0);
     return () => window.clearTimeout(id);
@@ -1214,37 +1251,74 @@ export default function Home() {
 function AmbientMusicPlayer() {
   const runtimeRef = useRef<AmbientRuntime | null>(null);
   const loopStartedAtRef = useRef(0);
-  const [playing, setPlaying] = useState(false);
-  const [trackId, setTrackId] = useState<AmbientTrackId>(() => readAmbientPreferences().trackId);
-  const [volume, setVolume] = useState(() => readAmbientPreferences().volume);
+  const accumulatedMsRef = useRef(0);
+  const [preferencesHydrated, setPreferencesHydrated] = useState(false);
+  const [status, setStatus] = useState<AmbientStatus>("idle");
+  const [trackId, setTrackId] = useState<AmbientTrackId>("rain-keep");
+  const [volume, setVolume] = useState(0.22);
   const [progress, setProgress] = useState(0);
   const track = AMBIENT_TRACKS.find((item) => item.id === trackId) ?? AMBIENT_TRACKS[0];
 
-  function stop() {
-    stopAmbientRuntime(runtimeRef.current);
+  function stop(fadeMs = 500) {
+    stopAmbientRuntime(runtimeRef.current, fadeMs);
     runtimeRef.current = null;
-    setPlaying(false);
+    setStatus("idle");
+    accumulatedMsRef.current = 0;
     setProgress(0);
   }
 
   function begin(nextTrackId = trackId) {
-    stopAmbientRuntime(runtimeRef.current);
+    stopAmbientRuntime(runtimeRef.current, 650);
     const runtime = startAmbientTrack(nextTrackId, volume);
     if (!runtime) return;
     runtimeRef.current = runtime;
     loopStartedAtRef.current = Date.now();
+    accumulatedMsRef.current = 0;
     setProgress(0);
-    setPlaying(true);
+    setStatus("playing");
+  }
+
+  function pause() {
+    const runtime = runtimeRef.current;
+    if (!runtime || status !== "playing") return;
+    accumulatedMsRef.current = (accumulatedMsRef.current + Date.now() - loopStartedAtRef.current) % 600_000;
+    runtime.master.gain.setTargetAtTime(0.0001, runtime.context.currentTime, 0.12);
+    window.setTimeout(() => {
+      void runtime.context.suspend().catch(() => undefined);
+    }, 180);
+    setStatus("paused");
+  }
+
+  function resume() {
+    const runtime = runtimeRef.current;
+    if (!runtime || status !== "paused") {
+      begin();
+      return;
+    }
+    loopStartedAtRef.current = Date.now();
+    void runtime.context.resume().then(() => {
+      runtime.master.gain.setTargetAtTime(volume, runtime.context.currentTime, 0.12);
+      setStatus("playing");
+    });
   }
 
   useEffect(() => {
-    return () => stopAmbientRuntime(runtimeRef.current);
+    const id = window.setTimeout(() => {
+      const preferences = readAmbientPreferences();
+      setTrackId(preferences.trackId);
+      setVolume(preferences.volume);
+      setPreferencesHydrated(true);
+    }, 0);
+    return () => {
+      window.clearTimeout(id);
+      stopAmbientRuntime(runtimeRef.current);
+    };
   }, []);
 
   useEffect(() => {
-    if (typeof window === "undefined") return;
+    if (!preferencesHydrated) return;
     window.localStorage.setItem(AMBIENT_STORAGE_KEY, JSON.stringify({ trackId, volume }));
-  }, [trackId, volume]);
+  }, [preferencesHydrated, trackId, volume]);
 
   useEffect(() => {
     if (runtimeRef.current) {
@@ -1253,15 +1327,15 @@ function AmbientMusicPlayer() {
   }, [volume]);
 
   useEffect(() => {
-    if (!playing) return;
+    if (status !== "playing") return;
     const id = window.setInterval(() => {
-      setProgress(((Date.now() - loopStartedAtRef.current) % 600_000) / 600_000);
+      setProgress(((accumulatedMsRef.current + Date.now() - loopStartedAtRef.current) % 600_000) / 600_000);
     }, 1000);
     return () => window.clearInterval(id);
-  }, [playing]);
+  }, [status]);
 
   return (
-    <aside className={cx("ambient-player", playing && "ambient-playing")}>
+    <aside className={cx("ambient-player", status === "playing" && "ambient-playing", status === "paused" && "ambient-paused")}>
       <div className="ambient-orb" aria-hidden="true">
         <span />
       </div>
@@ -1275,8 +1349,8 @@ function AmbientMusicPlayer() {
           <span style={{ width: `${Math.max(2, progress * 100)}%` }} />
         </div>
         <div className="ambient-controls">
-          <button className="ambient-play" onClick={() => (playing ? stop() : begin())}>
-            {playing ? "Stop" : "Play"}
+          <button className="ambient-play" onClick={() => (status === "playing" ? pause() : resume())}>
+            {status === "playing" ? "Pause" : status === "paused" ? "Resume" : "Play"}
           </button>
           <select
             aria-label="Choose focus music"
@@ -1284,7 +1358,7 @@ function AmbientMusicPlayer() {
             onChange={(event) => {
               const nextTrackId = event.target.value as AmbientTrackId;
               setTrackId(nextTrackId);
-              if (playing) begin(nextTrackId);
+              if (status !== "idle") begin(nextTrackId);
             }}
           >
             {AMBIENT_TRACKS.map((item) => (
@@ -1304,6 +1378,11 @@ function AmbientMusicPlayer() {
               onChange={(event) => setVolume(Number(event.target.value))}
             />
           </label>
+          {status !== "idle" && (
+            <button className="ambient-stop" onClick={() => stop()}>
+              Stop
+            </button>
+          )}
         </div>
       </div>
     </aside>

@@ -46,6 +46,7 @@ a,
 .ambient-player select,
 .ambient-player input,
 .ambient-play,
+.ambient-stop,
 .reward-sound-control,
 .reward-sound-control button,
 .add-checkpost-button,
@@ -166,7 +167,8 @@ button:disabled {
 }
 
 .ambient-player:hover,
-.ambient-playing {
+.ambient-playing,
+.ambient-paused {
   border-color: rgba(133, 212, 230, 0.58);
   box-shadow: 0 22px 58px rgba(0, 0, 0, 0.56), 0 0 26px rgba(66, 190, 216, 0.14), inset 0 0 24px rgba(67, 169, 193, 0.1);
 }
@@ -193,6 +195,10 @@ button:disabled {
 
 .ambient-playing .ambient-orb span {
   animation: ambientPulse 2.8s ease-in-out infinite;
+}
+
+.ambient-paused .ambient-orb span {
+  opacity: 0.28;
 }
 
 .ambient-main {
@@ -250,11 +256,12 @@ button:disabled {
   align-items: center;
   display: grid;
   gap: 7px;
-  grid-template-columns: auto minmax(82px, 1fr) minmax(78px, 0.9fr);
+  grid-template-columns: auto minmax(82px, 1fr) minmax(78px, 0.9fr) auto;
   margin-top: 8px;
 }
 
 .ambient-play,
+.ambient-stop,
 .ambient-controls select {
   min-height: 30px;
   border: 1px solid rgba(124, 202, 222, 0.32);
@@ -268,6 +275,10 @@ button:disabled {
 
 .ambient-play {
   padding: 0 10px;
+}
+
+.ambient-stop {
+  padding: 0 9px;
 }
 
 .ambient-controls select {
